@@ -3,18 +3,17 @@ services:
     name: miguel-render-1
     env: node
     plan: free
+    branch: main
     buildCommand: "npm install"
-    startCommand: "node index.js"
+    startCommand: "npm start"
     envVars:
+      - key: S3_BUCKET
+        sync: false
       - key: S3_ENDPOINT
-        value: https://d5a97a5844e3d75e7635cf95721ace2e.r2.cloudflarestorage.com
+        sync: false
       - key: S3_REGION
         value: auto
-      - key: S3_BUCKET
-        value: miguelcomprovante
       - key: S3_ACCESS_KEY_ID
         sync: false
       - key: S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: BUNKER_TOKEN
         sync: false
