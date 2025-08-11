@@ -1,42 +1,35 @@
-- const { Readable } = require('stream');
-...
-- await s3.send(new PutObjectCommand({
--   Bucket: BUCKET,
--   Key: key,
--   Body: Readable.from(buf),
--   ContentType: mimeType || 'application/octet-stream'
-- }));
-+ await s3.send(new PutObjectCommand({
-+   Bucket: BUCKET,
-+   Key: key,
-+   Body: buf,
-+   ContentType: mimeType || 'application/octet-stream'
-+ }));
+// index.js — Cloudflare R2 (S3-compatible) — Buffer no PutObject ✅
+const express = require('express');
+const bodyParser = require('body-parser');
+const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const app = express();
 app.use(bodyParser.json({ limit: '50mb' }));
 
+const PORT = process.env.PORT || 3000;
+const BUCKET = process.env.S3_BUCKET;
+
 const s3 = new S3Client({
   region: process.env.S3_REGION || 'auto',
-  endpoint: process.env.S3_ENDPOINT,                   // R2 endpoint SEM nome do bucket
-  forcePathStyle: true,                                // importante para R2
+  endpoint: process.env.S3_ENDPOINT,     // ex.: https://<ACCOUNT>.r2.cloudflarestorage.com
+  forcePathStyle: true,                   // importante para R2
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY_ID,
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY
   }
 });
-const BUCKET = process.env.S3_BUCKET;
 
-const safe = s => String(s||'').toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_.-]/g,'');
+const safe = s => String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[^a-z0-9.-]/g,'');
 
-app.get('/health', (req,res)=>res.json({ok:true,storage:'cloudflare-r2',bucket:BUCKET,time:new Date().toISOString()}));
+app.get('/health', (_req,res)=>res.json({ ok:true, storage:'cloudflare-r2', bucket:BUCKET, time:new Date().toISOString() }));
 
-// Página de teste (mesma origem)
+// Página de teste (mesma origem, sem CORS)
 app.get('/test', (_req, res) => {
   res.type('html').send(`<!doctype html>
 <meta charset="utf-8"><title>Teste Upload (R2)</title>
 <body style="font-family:system-ui;padding:20px;max-width:800px;margin:auto">
-<h2>Upload — Cloudflare R2</h2>
+<h2>Upload — Cloudflare R2 (pasta por usuário/mês)</h2>
 <form id="f">
   <label>User ID</label><br><input id="userId" value="123456789"><br><br>
   <label>Data (AAAA-MM-DD)</label><br><input id="date" value="2025-08-11"><br><br>
@@ -83,21 +76,28 @@ app.post('/upload-comprovante', async (req, res) => {
     if (!userId || !date || !fileBase64) {
       return res.status(400).json({ ok: false, error: 'Campos obrigatórios: userId, date, fileBase64' });
     }
+
     const ext = (mimeType && mimeType.includes('/') ? mimeType.split('/')[1] : 'bin');
-    const key = `${String(userId)}/${date.slice(0,7)}/${date}_${safe(descricao||'comprovante')}.${ext}`;
+    const key = ${String(userId)}/${date.slice(0,7)}/${date}_${safe(descricao || 'comprovante')}.${ext};
 
     const buf = Buffer.from(fileBase64, 'base64');
     if (!buf?.length) return res.status(400).json({ ok: false, error: 'fileBase64 inválido' });
 
+    // ✅ usa Buffer direto (sem stream) — evita header x-amz-decoded-content-length indefinido
     await s3.send(new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
-      Body: Readable.from(buf),
+      Body: buf,
       ContentType: mimeType || 'application/octet-stream'
     }));
 
     // URL de leitura (assinada por 24h)
-    const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn: 86400 });
+    const url = await getSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
+      { expiresIn: 60 * 60 * 24 }
+    );
+
     res.json({ ok: true, bucket: BUCKET, key, url });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -109,14 +109,16 @@ app.get('/list', async (req, res) => {
   try {
     const { userId, month } = req.query;
     if(!userId || !month) return res.status(400).json({ok:false,error:'Informe userId e month=YYYY-MM'});
-    const prefix = `${String(userId)}/${month}/`;
+    const prefix = ${String(userId)}/${month}/;
     const r = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix }));
-    res.json({ ok:true, items:(r.Contents||[]).map(o=>({ key:o.Key, size:o.Size, lastModified:o.LastModified })) });
+    res.json({
+      ok:true,
+      items:(r.Contents||[]).map(o=>({ key:o.Key, size:o.Size, lastModified:o.LastModified }))
+    });
   } catch (e) {
-    res.status(500).json({ ok:false, error: String(e?.message||e) });
+    res.status(500).json({ok:false, error: String(e?.message||e)});
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 R2 S3 API rodando na porta ${PORT}`));
-
+app.get('/', (_req, res) => res.json({ ok: true, tip: 'use /test ou POST /upload-comprovante' }));
+app.listen(PORT, () => console.log(🚀 R2 S3 API rodando na porta ${PORT}));
