@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: miguel-render-bloco1
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /path/to/credentials.json
+      - key: TELEGRAM_BOT_TOKEN
+        value: YOUR_TELEGRAM_BOT_TOKEN
+      - key: PORT
+        value: '3000'
+    ports:
+      - port: 3000
