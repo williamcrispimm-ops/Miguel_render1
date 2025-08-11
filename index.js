@@ -1,152 +1,109 @@
-// index.js
+// index.js — Service Account + pasta compartilhada (ROOT_FOLDER_ID)
 const express = require('express');
 const bodyParser = require('body-parser');
-const fs = require('fs');
-const path = require('path');
 const { google } = require('googleapis');
 const { Readable } = require('stream');
 
 const app = express();
 app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
-
 const PORT = process.env.PORT || 3000;
-const OAUTH_TOKEN_PATH = process.env.OAUTH_TOKEN_PATH || '/tmp/oauth_token.json';
 
-// ---------- OAuth Helpers ----------
-function loadOAuthWebCreds() {
-  const p = process.env.OAUTH_CLIENT_JSON || '';
-  if (p && fs.existsSync(p)) {
-    const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return j.web;
-  }
-  const web = {
-    client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
-    client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
-    redirect_uris: [process.env.GOOGLE_OAUTH_REDIRECT_URI],
-  };
-  if (web.client_id && web.client_secret && web.redirect_uris[0]) return web;
-  throw new Error('Credenciais OAuth não configuradas.');
-}
-
-function makeOAuth2Client() {
-  const web = loadOAuthWebCreds();
-  const { client_id, client_secret, redirect_uris } = web;
-  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-  if (fs.existsSync(OAUTH_TOKEN_PATH)) {
-    oAuth2Client.setCredentials(JSON.parse(fs.readFileSync(OAUTH_TOKEN_PATH, 'utf-8')));
-  }
-  return oAuth2Client;
-}
-
-// ---------- Auth Routes ----------
-app.get('/auth/start', (req, res) => {
-  try {
-    const oAuth2Client = makeOAuth2Client();
-    const scopes = ['https://www.googleapis.com/auth/drive.file'];
-    const url = oAuth2Client.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: scopes });
-    res.redirect(url);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
-app.get('/auth/callback', async (req, res) => {
-  try {
-    const code = req.query.code;
-    const oAuth2Client = makeOAuth2Client();
-    const { tokens } = await oAuth2Client.getToken(code);
-    fs.writeFileSync(OAUTH_TOKEN_PATH, JSON.stringify(tokens), 'utf-8');
-    oAuth2Client.setCredentials(tokens);
-    res.send(`<pre>✅ Autorizado! Token salvo.\nAgora pode testar o upload.\n${JSON.stringify(tokens, null, 2)}</pre>`);
-  } catch (e) {
-    res.status(500).send(`<pre>Erro no callback: ${String(e?.message || e)}</pre>`);
-  }
-});
-
-app.get('/auth/status', (req, res) => {
-  const ok = fs.existsSync(OAUTH_TOKEN_PATH);
-  res.json({ ok, tokenPath: OAUTH_TOKEN_PATH });
-});
-
-// ---------- Drive Helpers ----------
+// 🔐 Google Drive via Service Account (Secret File do Render)
 async function getDrive() {
-  if (fs.existsSync(OAUTH_TOKEN_PATH)) {
-    const oAuth2Client = makeOAuth2Client();
-    return google.drive({ version: 'v3', auth: oAuth2Client });
-  }
   const auth = new google.auth.GoogleAuth({
-    keyFile: '/etc/secrets/credentials.json',
+    keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS || '/etc/secrets/credentials.json',
     scopes: ['https://www.googleapis.com/auth/drive'],
   });
   return google.drive({ version: 'v3', auth });
 }
 
-async function findOrCreateRootFolder(drive) {
-  const envRoot = process.env.ROOT_FOLDER_ID;
-  if (envRoot) {
-    const r = await drive.files.get({
-      fileId: envRoot,
-      fields: 'id, name',
-      supportsAllDrives: true,
-    });
-    return r.data.id;
-  }
-  const q = "name = 'Miguel_Comprovantes' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-  const r = await drive.files.list({
-    q,
-    fields: 'files(id,name)',
-    includeItemsFromAllDrives: true,
-    supportsAllDrives: true,
-  });
-  if (r.data.files?.length) return r.data.files[0].id;
-  const folder = await drive.files.create({
-    requestBody: { name: 'Miguel_Comprovantes', mimeType: 'application/vnd.google-apps.folder' },
-    fields: 'id',
-    supportsAllDrives: true,
-  });
-  return folder.data.id;
+// ✅ usa ROOT_FOLDER_ID (obrigatório) — a pasta já deve estar compartilhada com a SA
+async function getRootFolderId(drive) {
+  const rootId = process.env.ROOT_FOLDER_ID;
+  if (!rootId) throw new Error('Defina ROOT_FOLDER_ID (ID da pasta raiz compartilhada no Drive).');
+  // valida existência/permissão
+  await drive.files.get({ fileId: rootId, fields: 'id,name', supportsAllDrives: true });
+  return rootId;
 }
 
+// 🔧 cria/obtém subpasta por nome dentro de parentId
 async function getOrCreateFolder(drive, parentId, name) {
-  const q = `'${parentId}' in parents and name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   const r = await drive.files.list({
-    q,
+    q: `'${parentId}' in parents and name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
     fields: 'files(id,name)',
     includeItemsFromAllDrives: true,
     supportsAllDrives: true,
   });
   if (r.data.files?.length) return r.data.files[0].id;
-  const folder = await drive.files.create({
+
+  const created = await drive.files.create({
     requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
     fields: 'id',
     supportsAllDrives: true,
   });
-  return folder.data.id;
+  return created.data.id;
 }
 
-// ---------- Upload Endpoint ----------
+// 🧪 saúde
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'render_sa', time: new Date().toISOString() });
+});
+
+// 🧪 lista arquivos do mês
+app.get('/debug/drive/list', async (req, res) => {
+  try {
+    const { userId, month } = req.query;
+    if (!userId || !month) return res.status(400).json({ ok: false, error: 'Informe userId e month=YYYY-MM' });
+
+    const drive = await getDrive();
+    const rootId = await getRootFolderId(drive);
+    const userFolder = await getOrCreateFolder(drive, rootId, String(userId));
+    const monthFolder = await getOrCreateFolder(drive, userFolder, month);
+
+    const r = await drive.files.list({
+      q: `'${monthFolder}' in parents and trashed=false`,
+      fields: 'files(id,name,mimeType,webViewLink,createdTime)',
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      pageSize: 100,
+    });
+    res.json({ ok: true, folderId: monthFolder, files: r.data.files || [] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// 📤 upload de comprovante (cria <userId>/<AAAA-MM>/ e envia o arquivo)
 app.post('/upload-comprovante', async (req, res) => {
   try {
     const { userId, date, descricao, mimeType, fileBase64 } = req.body || {};
     if (!userId || !date || !fileBase64) {
       return res.status(400).json({ ok: false, error: 'Campos obrigatórios: userId, date, fileBase64' });
     }
+
     const ext = (mimeType && mimeType.split('/')[1]) || 'png';
-    const safeDesc = (descricao || 'comprovante').toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_.-]/g, '');
+    const safeDesc = (descricao || 'comprovante')
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9_.-]/g, '');
     const fileName = `${date}_${safeDesc}.${ext}`;
 
     const drive = await getDrive();
-    const rootId = await findOrCreateRootFolder(drive);
+    const rootId = await getRootFolderId(drive);
+
+    // pastas: user -> mês
     const userFolder = await getOrCreateFolder(drive, rootId, String(userId));
     const monthFolder = await getOrCreateFolder(drive, userFolder, date.slice(0, 7));
 
+    // base64 -> stream
     const buf = Buffer.from(fileBase64, 'base64');
+    if (!buf?.length) return res.status(400).json({ ok: false, error: 'fileBase64 inválido ou vazio' });
+
     const file = await drive.files.create({
       requestBody: { name: fileName, parents: [monthFolder] },
       media: { mimeType: mimeType || 'application/octet-stream', body: Readable.from(buf) },
-      fields: 'id,name,webViewLink,parents',
-      supportsAllDrives: true
+      fields: 'id,name,mimeType,webViewLink,parents',
+      supportsAllDrives: true,
     });
 
     res.json({ ok: true, uploaded: file.data });
@@ -155,46 +112,56 @@ app.post('/upload-comprovante', async (req, res) => {
   }
 });
 
-// ---------- Página de teste simples ----------
-app.get('/test', (req, res) => {
-  res.send(`
-    <form method="POST" action="/upload-comprovante" enctype="application/json" onsubmit="sendFile(event)">
-      <input type="text" id="userId" placeholder="User ID" required><br>
-      <input type="date" id="date" required><br>
-      <input type="text" id="descricao" placeholder="Descrição"><br>
-      <input type="file" id="file" required><br>
-      <button type="submit">Enviar</button>
-    </form>
-    <pre id="out"></pre>
-    <script>
-    async function sendFile(e){
-      e.preventDefault();
-      const file = document.getElementById('file').files[0];
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = reader.result.split(',')[1];
-        const body = {
-          userId: document.getElementById('userId').value,
-          date: document.getElementById('date').value,
-          descricao: document.getElementById('descricao').value,
-          mimeType: file.type,
-          fileBase64: base64
-        };
-        const res = await fetch('/upload-comprovante', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        document.getElementById('out').textContent = JSON.stringify(await res.json(), null, 2);
-      };
-      reader.readAsDataURL(file);
-    }
-    </script>
-  `);
+// 🧪 página de teste (mesma origem, sem CORS)
+app.get('/test', (_req, res) => {
+  res.type('html').send(`<!doctype html>
+<meta charset="utf-8">
+<title>Teste Upload (SA)</title>
+<body style="font-family:system-ui;padding:20px;max-width:800px;margin:auto">
+<h2>Teste Upload — Service Account + Pasta compartilhada</h2>
+<form id="f">
+  <label>User ID</label><br><input id="userId" value="123456789"><br><br>
+  <label>Data (AAAA-MM-DD)</label><br><input id="date" value="2025-08-11"><br><br>
+  <label>Descrição</label><br><input id="descricao" value="compra_teste"><br><br>
+  <label>Arquivo</label><br><input type="file" id="file" accept="image/*,application/pdf"><br><br>
+  <button>Enviar</button>
+</form>
+<h3>Resposta</h3>
+<pre id="out"></pre>
+<script>
+const out = document.getElementById('out');
+document.getElementById('f').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const file = document.getElementById('file').files[0];
+  if(!file){ out.textContent='Selecione um arquivo.'; return; }
+  const r = new FileReader();
+  r.onload = async () => {
+    const base64 = r.result.split(',')[1];
+    const payload = {
+      userId: document.getElementById('userId').value.trim(),
+      date: document.getElementById('date').value.trim(),
+      descricao: document.getElementById('descricao').value.trim(),
+      mimeType: file.type || 'application/octet-stream',
+      fileBase64: base64
+    };
+    out.textContent = 'Enviando...';
+    const resp = await fetch('/upload-comprovante', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const text = await resp.text();
+    try{ out.textContent = JSON.stringify(JSON.parse(text), null, 2); }
+    catch{ out.textContent = text; }
+  };
+  r.readAsDataURL(file);
+});
+</script>
+</body>`);
 });
 
-// ---------- Ping ----------
-app.get('/', (req, res) => {
-  res.json({ ok: true, service: 'render_1', port: PORT, time: new Date().toISOString() });
+app.get('/', (_req, res) => {
+  res.json({ ok: true, service: 'render_sa', time: new Date().toISOString() });
 });
 
-app.listen(PORT, () => console.log(`Miguel Render 1 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Render SA rodando na porta ${PORT}`));
