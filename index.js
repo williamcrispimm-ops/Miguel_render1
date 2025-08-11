@@ -1,9 +1,9 @@
-// Render 1 - Servidor principal (Google Drive + keep-alive ping)
+// Render 1 - Google Drive + keep-alive + debug/creds
 const express = require('express');
 const bodyParser = require('body-parser');
 const { URL } = require('url');
+const fs = require('fs');
 
-// Lazy import para evitar crash se faltar credencial do Google
 let googleApi = null;
 let driveClient = null;
 
@@ -48,26 +48,47 @@ function filename(date, desc, mime) {
 const app = express();
 app.use(bodyParser.json({ limit: '20mb' }));
 
+// HEALTH
 app.get('/health', (req,res)=>{
   res.json({ ok: true, service: 'render_1', port: process.env.PORT || 3000, time: new Date().toISOString() });
 });
 
-// POST /upload-comprovante  { userId, date:'YYYY-MM-DD', descricao, mimeType, fileBase64 }
+// DEBUG CREDENTIALS
+app.get('/debug/creds', (req, res) => {
+  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS || '/app/credentials.json';
+  const exists = fs.existsSync(path);
+  if (exists) {
+    res.json({ ok: true, message: `Arquivo encontrado: ${path}` });
+  } else {
+    res.status(404).json({ ok: false, message: `Arquivo NÃO encontrado: ${path}` });
+  }
+});
+
+// UPLOAD COMPROVANTE
 app.post('/upload-comprovante', async (req,res)=>{
   try{
     const { userId, date, descricao, mimeType, fileBase64 } = req.body || {};
-    if(!userId || !date || !mimeType || !fileBase64) return res.status(400).json({error:'Missing params: userId, date, mimeType, fileBase64'});
+    if(!userId || !date || !mimeType || !fileBase64) {
+      return res.status(400).json({error:'Missing params: userId, date, mimeType, fileBase64'});
+    }
 
     const drive = await getDrive();
     if(!drive) return res.status(503).json({ error: 'Google Drive não configurado' });
 
     // raiz
-    let root = await drive.files.list({ q:`name='${ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`, fields:'files(id)' });
+    let root = await drive.files.list({
+      q:`name='${ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields:'files(id)'
+    });
     let rootId = root.data.files?.[0]?.id;
     if(!rootId){
-      const created = await drive.files.create({ resource:{ name:ROOT_FOLDER_NAME, mimeType:'application/vnd.google-apps.folder' }, fields:'id' });
+      const created = await drive.files.create({
+        resource:{ name:ROOT_FOLDER_NAME, mimeType:'application/vnd.google-apps.folder' },
+        fields:'id'
+      });
       rootId = created.data.id;
     }
+
     // user -> mês
     const userFolder = await getOrCreateFolder(drive, rootId, String(userId));
     const monthFolder = await getOrCreateFolder(drive, userFolder, date.slice(0,7));
@@ -83,24 +104,22 @@ app.post('/upload-comprovante', async (req,res)=>{
   }
 });
 
-// --------- KEEP-ALIVE PING ---------
+// KEEP-ALIVE
 function startKeepAlive() {
   const raw = process.env.PING_URL || (process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/health` : '');
   if (!raw) return;
   let urlObj;
   try { urlObj = new URL(raw); } catch { return; }
-  const isHttps = urlObj.protocol === 'https:';
-  const client = isHttps ? require('https') : require('http');
+  const client = urlObj.protocol === 'https:' ? require('https') : require('http');
   const ping = () => {
     const req = client.get(raw, res => { res.resume(); });
     req.on('error', () => {});
   };
-  // a cada 14 minutos
   setInterval(ping, 14 * 60 * 1000);
-  // ping inicial após 20s
   setTimeout(ping, 20000);
 }
 startKeepAlive();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log('Render_1 up on', PORT));
+
