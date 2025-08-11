@@ -1,8 +1,17 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const { Readable } = require('stream');
+- const { Readable } = require('stream');
+...
+- await s3.send(new PutObjectCommand({
+-   Bucket: BUCKET,
+-   Key: key,
+-   Body: Readable.from(buf),
+-   ContentType: mimeType || 'application/octet-stream'
+- }));
++ await s3.send(new PutObjectCommand({
++   Bucket: BUCKET,
++   Key: key,
++   Body: buf,
++   ContentType: mimeType || 'application/octet-stream'
++ }));
 
 const app = express();
 app.use(bodyParser.json({ limit: '50mb' }));
