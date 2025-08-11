@@ -11,5 +11,4 @@ services:
         value: 'YOUR_TELEGRAM_BOT_TOKEN'
       - key: PORT
         value: '3000'
-    ports:
       - port: 3000
