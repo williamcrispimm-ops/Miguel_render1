@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: miguel-render-1
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /app/credentials.json
+      - key: TELEGRAM_BOT_TOKEN
+        value: "YOUR_TELEGRAM_BOT_TOKEN"
+      - key: PING_URL
+        value: ""  # deixe vazio para usar RENDER_EXTERNAL_URL/health automaticamente
