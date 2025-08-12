@@ -144,6 +144,37 @@ app.get('/fala/:comando', (req, res) => {
   res.json({ ok: true, comando, resposta: pick(bucket) });
 });
 
+// ---------- Upload de arquivo para R2 ----------
+app.post('/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: 'Nenhum arquivo enviado' });
+    }
+
+    const { userId = 'sem-user', descricao = '', date } = req.body;
+    const now = new Date(date || Date.now());
+    const folder = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const key = `${folder}/${userId}/${Date.now()}_${req.file.originalname}`;
+
+    await r2Client.send(new PutObjectCommand({
+      Bucket: process.env.CF_R2_BUCKET,
+      Key: key,
+      Body: req.file.buffer
+    }));
+
+    res.json({
+      ok: true,
+      message: 'Arquivo enviado com sucesso!',
+      file: {
+        key,
+        url: `${process.env.CF_R2_ENDPOINT}/${process.env.CF_R2_BUCKET}/${key}`
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ---------- Upload de comprovante ----------
 // multipart/form-data: field "file", body: userId (opcional), descricao (opcional), date (opcional)
 app.post('/upload', upload.single('file'), async (req, res) => {
