@@ -3,11 +3,17 @@
 
 const express = require('express');
 const bodyParser = require('body-parser');
+const cors = require('cors');   
 const multer = require('multer');
 const AWS = require('aws-sdk');
 const path = require('path');
 
 const app = express();
+
+
+// CORS liberado (todas as origens) — ajuste “origin” se quiser restringir
+app.use(cors({ origin: true, credentials: false }));
+app.options('*', cors());                    // <— responde preflight
 app.use(bodyParser.json({ limit: '25mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '25mb' }));
 
