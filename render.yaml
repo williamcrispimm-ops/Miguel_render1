@@ -3,17 +3,20 @@ services:
     name: miguel-render-1
     env: node
     plan: free
-    branch: main
     buildCommand: "npm install"
-    startCommand: "npm start"
+    startCommand: "node index.js"
+    healthCheckPath: "/healthz"
     envVars:
-      - key: S3_BUCKET
+      - key: PORT
+        value: "3000"
+
+      # Cloudflare R2 (API S3)
+      - key: CF_R2_ACCESS_KEY_ID
         sync: false
-      - key: S3_ENDPOINT
+      - key: CF_R2_SECRET_ACCESS_KEY
         sync: false
-      - key: S3_REGION
-        value: auto
-      - key: S3_ACCESS_KEY_ID
-        sync: false
-      - key: S3_SECRET_ACCESS_KEY
-        sync: false
+      - key: CF_R2_BUCKET
+        value: "miguelcomprovante"
+      - key: CF_R2_ENDPOINT
+        value: "https://SEU-ID.r2.cloudflarestorage.com"
+
