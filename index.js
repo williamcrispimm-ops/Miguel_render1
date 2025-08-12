@@ -1,223 +1,210 @@
-// index.js — Render 1 (Miguel básico + Cloudflare R2 S3)
-// Node 18+
+// index.js — Render 1 (Miguel: frases + upload R2 + lista)
+// deps: express, body-parser, multer, aws-sdk, path
 
 const express = require('express');
 const bodyParser = require('body-parser');
-const {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  ListObjectsV2Command,
-  HeadBucketCommand
-} = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const multer = require('multer');
+const AWS = require('aws-sdk');
+const path = require('path');
 
 const app = express();
-app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.json({ limit: '25mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '25mb' }));
 
-// ====== ENVs (configure no Render) ======
-const PORT = process.env.PORT || 3000;
-const S3_ENDPOINT = process.env.S3_ENDPOINT; // ex.: https://<ACCOUNT>.r2.cloudflarestorage.com (sem nome do bucket)
-const S3_REGION = process.env.S3_REGION || 'auto';
-const S3_BUCKET = process.env.S3_BUCKET;     // ex.: miguelcomprovante
-const S3_ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID;
-const S3_SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY;
+// ---------- Cloudflare R2 (S3) ----------
+const R2_ACCESS_KEY_ID     = process.env.CF_R2_ACCESS_KEY_ID;
+const R2_SECRET_ACCESS_KEY = process.env.CF_R2_SECRET_ACCESS_KEY;
+const R2_BUCKET            = process.env.CF_R2_BUCKET || 'miguelcomprovante';
+const R2_ENDPOINT          = process.env.CF_R2_ENDPOINT; // ex: https://<id>.r2.cloudflarestorage.com
 
-// Validação básica de envs
-function assertEnvs() {
-  const missing = [];
-  if (!S3_ENDPOINT) missing.push('S3_ENDPOINT');
-  if (!S3_BUCKET) missing.push('S3_BUCKET');
-  if (!S3_ACCESS_KEY_ID) missing.push('S3_ACCESS_KEY_ID');
-  if (!S3_SECRET_ACCESS_KEY) missing.push('S3_SECRET_ACCESS_KEY');
-  if (missing.length) {
-    throw new Error(`Faltando env(s): ${missing.join(', ')}`);
-  }
+if (!R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET || !R2_ENDPOINT) {
+  console.error('❌ Faltam variáveis do Cloudflare R2 (CF_R2_*)');
 }
-try { assertEnvs(); } catch (e) { console.warn('ENV WARNING:', e.message); }
 
-// ====== S3 Client (Cloudflare R2) ======
-const s3 = new S3Client({
-  region: S3_REGION,
-  endpoint: S3_ENDPOINT,
-  forcePathStyle: true, // importante para R2/B2
-  credentials: { accessKeyId: S3_ACCESS_KEY_ID, secretAccessKey: S3_SECRET_ACCESS_KEY }
+const s3 = new AWS.S3({
+  endpoint: R2_ENDPOINT,
+  accessKeyId: R2_ACCESS_KEY_ID,
+  secretAccessKey: R2_SECRET_ACCESS_KEY,
+  signatureVersion: 'v4',
+  s3ForcePathStyle: true,
 });
 
-// ====== Helpers ======
-const safe = (s) =>
-  String(s || '')
-    .toLowerCase()
-    .replace(/\s+/g, '_')
-    .replace(/[^a-z0-9_.-]/g, '');
+// ---------- Upload (memória) ----------
+const upload = multer({ storage: multer.memoryStorage() });
 
-const today = () => new Date().toISOString().slice(0, 10);
+// ---------- Frases do Miguel ----------
+const frases = {
+  oi: [
+    'E aí! Sou o Miguel 😎, o cérebro por trás do MiGMum, bora deixar essas finanças alinhadas?',
+    'Falaaa! Por aqui tá tudo sob controle. Bora organizar as finanças?'
+  ],
+  relatorio: [
+    'Relatório rápido: manda teu mês que eu conto os comprovantes 📊',
+    'Puxa um /lista AAAA-MM que eu te digo o que encontrei!'
+  ],
+  ping: [
+    '🏓 Tô on, meu consagrado!',
+    '⚡ Online e tomando café ☕',
+    '👀 Sempre alerta por aqui!'
+  ],
+  okComprovante: [
+    '🧾 Tá salvo! Não some mais.',
+    '✅ Subi lá no bunker, confia.',
+    '📦 Guardado com sucesso!'
+  ],
+  ajuda: [
+    'Me manda: `gastei 23,90 mercado` ou anexa o comprovante.',
+    'Comandos: `/ping`, `/lista AAAA-MM`, `/ajuda`'
+  ],
+  erro: [
+    'Eita, buguei aqui… tenta de novo rapidinho?',
+    'Hum, algo deu ruim. Vou checar os cabos! 🧰'
+  ],
+  motivacionais: [
+    'Grãozinho de arroz por grãozinho: economia cresce 💪',
+    'Constância > intensidade. Um passo por dia ✅'
+  ],
+  zoeira: [
+    'Se gastar muito hoje, amanhã eu te mando boleto motivacional 😂',
+    'Cartão coçou? Eu vi, hein… 👀'
+  ],
+  elogio: [
+    'Mandou bem! Registrar é metade do caminho 👏',
+    'Orgulho de você, hein! 📈'
+  ],
+  dicasEconomia: [
+    'Troca marca premium por marca própria em itens básicos e sente a diferença no mês 😉',
+    'Define um teto por categoria e me chama se chegar perto!'
+  ],
+  desafio: [
+    'Desafio da semana: 3 dias sem delivery. Topa? 🍳',
+    'Missão relâmpago: garimpar 2 gastos “fantasma” e cortar 🔎✂️'
+  ],
+  lembrete: [
+    'Bebe água e guarda o comprovante 💧🧾',
+    'Check-in financeiro do dia feito?'
+  ],
+  comprovantePedido: [
+    'Me manda o comprovante do dia anterior quando puder, por favor! 📎',
+    'Assim que der, sobe o comprovante de ontem pra eu fechar o saldo 👌'
+  ],
+  queda: [
+    '⚠️ Detectei instabilidade… segura que já tô monitorando!',
+  ],
+  recuperacao: [
+    '✅ Voltamos ao normal. Pode seguir o baile!',
+  ]
+};
 
-// ====== Health & Debug ======
-app.get('/ping', (_req, res) => {
+// ajuda programática
+const comandosDisponiveis = [
+  'oi', 'relatorio', 'ping', 'ajuda',
+  'okcomprovante', 'erro',
+  'motivacionais', 'zoeira', 'elogio',
+  'dicaseconomia', 'desafio', 'lembrete', 'comprovantepedido',
+  'queda', 'recuperacao'
+];
+
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+// ---------- Health ----------
+app.get('/healthz', (req, res) => {
   res.json({ ok: true, service: 'render_1', time: new Date().toISOString() });
 });
 
-app.get('/debug/config', (_req, res) => {
-  res.json({
-    ok: true,
-    endpoint: S3_ENDPOINT || null,
-    region: S3_REGION || null,
-    bucket: S3_BUCKET || null,
-    hasAccessKey: !!S3_ACCESS_KEY_ID,
-    hasSecret: !!S3_SECRET_ACCESS_KEY
-  });
+// ---------- Frases rápidas ----------
+// lista comandos
+app.get('/fala', (req, res) => {
+  res.json({ ok: true, comandos: comandosDisponiveis });
 });
 
-app.get('/debug/verify-bucket', async (_req, res) => {
-  try {
-    await s3.send(new HeadBucketCommand({ Bucket: S3_BUCKET }));
-    res.json({ ok: true, msg: 'Bucket acessível' });
-  } catch (e) {
-    res.status(500).json({
-      ok: false,
-      name: e.name,
-      message: e.message,
-      status: e.$metadata?.httpStatusCode
-    });
-  }
-});
-
-// ====== Frases básicas do Miguel ======
+// fala específica
 app.get('/fala/:comando', (req, res) => {
   const comando = String(req.params.comando || '').toLowerCase();
-  let resposta;
+  let bucket;
   switch (comando) {
-    case 'oi':
-      resposta = 'E aí! Sou o Miguel 😎 Como posso te ajudar hoje?';
-      break;
-    case 'relatorio':
-      resposta = 'Relatório rápido: manda teu mês que eu conto os comprovantes 📊';
-      break;
+    case 'oi':                bucket = frases.oi; break;
+    case 'relatorio':         bucket = frases.relatorio; break;
+    case 'ping':              bucket = frases.ping; break;
+    case 'ajuda':             bucket = frases.ajuda; break;
+    case 'okcomprovante':     bucket = frases.okComprovante; break;
+    case 'erro':              bucket = frases.erro; break;
+    case 'motivacionais':     bucket = frases.motivacionais; break;
+    case 'zoeira':            bucket = frases.zoeira; break;
+    case 'elogio':            bucket = frases.elogio; break;
+    case 'dicaseconomia':     bucket = frases.dicasEconomia; break;
+    case 'desafio':           bucket = frases.desafio; break;
+    case 'lembrete':          bucket = frases.lembrete; break;
+    case 'comprovantepedido': bucket = frases.comprovantePedido; break;
+    case 'queda':             bucket = frases.queda; break;
+    case 'recuperacao':       bucket = frases.recuperacao; break;
     default:
-      resposta = 'Não saquei 🤔 mas se for comprovante, manda que eu guardo!';
+      return res.json({ ok: true, comando, resposta: 'Não saquei 🤔 mas se for comprovante, manda que eu guardo!' });
   }
-  res.json({ ok: true, comando, resposta });
+  res.json({ ok: true, comando, resposta: pick(bucket) });
 });
 
-// ====== Página de teste (navegador) ======
-app.get('/test', (_req, res) => {
-  res.type('html').send(`<!doctype html>
-<meta charset="utf-8"><title>Teste Upload (R2)</title>
-<body style="font-family:system-ui;padding:20px;max-width:900px;margin:auto">
-<h2>Upload — Cloudflare R2 (userId/AAAA-MM/AAAA-MM-DD_desc.ext)</h2>
-<form id="f">
-  <label>User ID</label><br><input id="userId" value="123456789"><br><br>
-  <label>Data (AAAA-MM-DD)</label><br><input id="date" value="${today()}"><br><br>
-  <label>Descrição</label><br><input id="descricao" value="compra_teste"><br><br>
-  <label>Arquivo</label><br><input type="file" id="file" accept="image/*,application/pdf"><br><br>
-  <button>Enviar</button>
-</form>
-<h3>Resposta</h3><pre id="out"></pre>
-<script>
-const out = document.getElementById('out');
-document.getElementById('f').addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const file = document.getElementById('file').files[0];
-  if(!file){ out.textContent='Selecione um arquivo.'; return; }
-  const r = new FileReader();
-  r.onload = async () => {
-    const base64 = r.result.split(',')[1];
-    const body = {
-      userId: document.getElementById('userId').value.trim(),
-      date: document.getElementById('date').value.trim(),
-      descricao: document.getElementById('descricao').value.trim(),
-      mimeType: file.type || 'application/octet-stream',
-      fileBase64: base64
-    };
-    out.textContent = 'Enviando...';
-    try{
-      const resp = await fetch('/upload-comprovante', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      const text = await resp.text();
-      try{ out.textContent = JSON.stringify(JSON.parse(text), null, 2); } catch{ out.textContent = text; }
-    }catch(err){ out.textContent = 'Erro: ' + err.message; }
-  };
-  r.readAsDataURL(file);
-});
-</script>
-</body>`);
-});
-
-// ====== Upload de comprovante ======
-app.post('/upload-comprovante', async (req, res) => {
+// ---------- Upload de comprovante ----------
+// multipart/form-data: field "file", body: userId (opcional), descricao (opcional), date (opcional)
+app.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    const { userId, date, descricao, mimeType, fileBase64, fileData } = req.body || {};
-    if (!userId) return res.status(400).json({ ok: false, error: 'userId é obrigatório' });
+    if (!req.file) return res.status(400).json({ ok: false, error: 'Nenhum arquivo enviado (campo file).' });
 
-    const dia = date || today();
-    const anoMes = dia.slice(0, 7);
-    const desc = safe(descricao || 'comprovante');
-    const base64 = fileBase64 || fileData;
-    if (!base64) return res.status(400).json({ ok: false, error: 'fileBase64 (ou fileData) é obrigatório' });
+    const userId = String(req.body.userId || 'anon');
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const baseName = path.basename(req.file.originalname || 'comprovante.bin').replace(/[^\w.\-]+/g, '_');
+    const key = `${ym}/${userId}/${Date.now()}_${baseName}`;
 
-    const ext = (mimeType && mimeType.includes('/')) ? mimeType.split('/')[1] : 'bin';
-    const key = `${String(userId)}/${anoMes}/${dia}_${desc}.${ext}`;
-
-    const buf = Buffer.from(base64, 'base64');
-    if (!buf.length) return res.status(400).json({ ok: false, error: 'Base64 inválido' });
-
-    await s3.send(new PutObjectCommand({
-      Bucket: S3_BUCKET,
+    await s3.putObject({
+      Bucket: R2_BUCKET,
       Key: key,
-      Body: buf,
-      ContentType: mimeType || 'application/octet-stream'
-    }));
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype || 'application/octet-stream'
+    }).promise();
 
-    const url = await getSignedUrl(
-      s3,
-      new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
-      { expiresIn: 86400 } // 24h
-    );
-
-    res.json({ ok: true, key, url });
-  } catch (e) {
-    res.status(500).json({
-      ok: false,
-      name: e.name,
-      message: e.message,
-      status: e.$metadata?.httpStatusCode
+    const url = `${R2_ENDPOINT}/${R2_BUCKET}/${key}`;
+    res.json({
+      ok: true,
+      message: pick(frases.okComprovante),
+      file: { key, url, size: req.file.size, mime: req.file.mimetype || null },
+      meta: {
+        userId,
+        descricao: req.body.descricao || null,
+        date: req.body.date || now.toISOString().slice(0,10)
+      }
     });
+  } catch (e) {
+    console.error('upload error:', e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ====== Listar comprovantes por usuário/mês ======
-app.get('/lista/:userId/:anoMes', async (req, res) => {
+// ---------- Listagem por mês/usuário ----------
+// GET /lista/:userId/:ym   (ym = AAAA-MM)
+app.get('/lista/:userId/:ym', async (req, res) => {
   try {
-    const { userId, anoMes } = req.params;
-    const prefix = `${String(userId)}/${anoMes}/`;
-
-    const r = await s3.send(new ListObjectsV2Command({ Bucket: S3_BUCKET, Prefix: prefix }));
-    const contents = r.Contents || [];
-
-    // gerar URLs de leitura (GetObject) por 24h
-    const items = await Promise.all(contents.map(async (o) => {
-      const url = await getSignedUrl(
-        s3,
-        new GetObjectCommand({ Bucket: S3_BUCKET, Key: o.Key }),
-        { expiresIn: 86400 }
-      );
-      return { key: o.Key, size: o.Size, lastModified: o.LastModified, url };
+    const { userId, ym } = req.params;
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      return res.status(400).json({ ok: false, error: 'Formato de mês inválido. Use AAAA-MM.' });
+    }
+    const prefix = `${ym}/${userId}/`;
+    const out = await s3.listObjectsV2({ Bucket: R2_BUCKET, Prefix: prefix }).promise();
+    const items = (out.Contents || []).map(o => ({
+      key: o.Key,
+      url: `${R2_ENDPOINT}/${R2_BUCKET}/${o.Key}`,
+      size: o.Size,
+      lastModified: o.LastModified
     }));
-
     res.json({ ok: true, count: items.length, items });
   } catch (e) {
-    res.status(500).json({
-      ok: false,
-      name: e.name,
-      message: e.message,
-      status: e.$metadata?.httpStatusCode
-    });
+    console.error('lista error:', e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ====== Root ======
-app.get('/', (_req, res) => {
-  res.json({ ok: true, service: 'render_1', tip: 'use /test, POST /upload-comprovante, GET /lista/:userId/:anoMes' });
+// ---------- Start ----------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Miguel Render 1 ON :${PORT}`);
 });
-
-app.listen(PORT, () => console.log(`🚀 Render 1 pronto na porta ${PORT}`));
